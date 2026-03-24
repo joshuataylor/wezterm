@@ -1089,7 +1089,11 @@ impl TermWindow {
             Ok(ok) => Ok(ok),
             Err(err) => {
                 match err.downcast_ref::<wgpu::SurfaceError>() {
-                    Some(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                    Some(
+                        wgpu::SurfaceError::Lost
+                        | wgpu::SurfaceError::Outdated
+                        | wgpu::SurfaceError::Timeout,
+                    ) => {
                         self.webgpu.as_mut().unwrap().resize(self.dimensions);
                         return self.do_paint_webgpu_impl();
                     }

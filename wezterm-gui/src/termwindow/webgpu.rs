@@ -364,7 +364,7 @@ impl WebGpuState {
             format,
             width: dimensions.pixel_width as u32,
             height: dimensions.pixel_height as u32,
-            present_mode: wgpu::PresentMode::Fifo,
+            present_mode: wgpu::PresentMode::AutoNoVsync,
             alpha_mode: if caps
                 .alpha_modes
                 .contains(&wgpu::CompositeAlphaMode::PostMultiplied)
