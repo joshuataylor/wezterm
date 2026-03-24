@@ -87,6 +87,22 @@ fn vs_main(
 
 // Fragment shader
 
+fn linear_to_srgb(linear: f32) -> f32 {
+  if linear <= 0.0031308 {
+    return 12.92 * linear;
+  }
+  return 1.055 * pow(linear, 1.0 / 2.4) - 0.055;
+}
+
+fn linear_to_srgb4(c: vec4<f32>) -> vec4<f32> {
+  return vec4<f32>(
+    linear_to_srgb(c.r),
+    linear_to_srgb(c.g),
+    linear_to_srgb(c.b),
+    c.a
+  );
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
   var color: vec4<f32>;
@@ -119,6 +135,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
   }
 
   color = apply_hsv(color, hsv);
+
+  // Convert to sRGB before output. The render target uses a non-sRGB view
+  // so blending happens in sRGB/gamma space, matching the OpenGL backend.
+  // This avoids text appearing heavier/bolder than expected.
+  color = linear_to_srgb4(color);
 
   return color;
 }

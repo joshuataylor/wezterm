@@ -24,9 +24,16 @@ impl crate::TermWindow {
         let render_state = self.render_state.as_ref().unwrap();
 
         let output = webgpu.surface.get_current_texture()?;
+        // Use the render target format (non-sRGB when possible) so that
+        // blending occurs in sRGB/gamma space.  The shader does its own
+        // linear-to-sRGB conversion, matching the OpenGL backend and
+        // preventing text from appearing heavier/bolder.
         let view = output
             .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
+            .create_view(&wgpu::TextureViewDescriptor {
+                format: Some(webgpu.render_target_format),
+                ..Default::default()
+            });
         let mut encoder = webgpu
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
