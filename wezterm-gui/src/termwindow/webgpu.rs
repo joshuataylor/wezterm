@@ -30,6 +30,7 @@ pub struct WebGpuState {
     pub config: RefCell<wgpu::SurfaceConfiguration>,
     pub dimensions: RefCell<Dimensions>,
     pub render_pipeline: wgpu::RenderPipeline,
+    pub render_target_format: wgpu::TextureFormat,
     shader_uniform_bind_group_layout: wgpu::BindGroupLayout,
     pub texture_bind_group_layout: wgpu::BindGroupLayout,
     pub texture_nearest_sampler: wgpu::Sampler,
@@ -383,6 +384,19 @@ impl WebGpuState {
         };
         surface.configure(&device, &config);
 
+        // When SURFACE_VIEW_FORMATS is supported, render to a non-sRGB view
+        // so that blending happens in sRGB/gamma space (the shader does its
+        // own linear-to-sRGB conversion).  This matches the OpenGL backend
+        // and prevents text from appearing heavier/bolder.
+        let render_target_format = if downlevel_caps
+            .flags
+            .contains(wgpu::DownlevelFlags::SURFACE_VIEW_FORMATS)
+        {
+            format.remove_srgb_suffix()
+        } else {
+            format
+        };
+
         let shader = device.create_shader_module(wgpu::include_wgsl!("../shader.wgsl"));
 
         let shader_uniform_bind_group_layout =
@@ -466,7 +480,7 @@ impl WebGpuState {
                 module: &shader,
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format,
+                    format: render_target_format,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -501,6 +515,7 @@ impl WebGpuState {
             config: RefCell::new(config),
             dimensions: RefCell::new(dimensions),
             render_pipeline,
+            render_target_format,
             handle,
             shader_uniform_bind_group_layout,
             texture_bind_group_layout,
