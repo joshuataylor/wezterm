@@ -2242,6 +2242,10 @@ impl WindowView {
 
     extern "C" fn did_become_key(this: &mut Object, _sel: Sel, _id: id) {
         if let Some(this) = Self::get_this(this) {
+            // Reset the paint throttle so the first drawRect after regaining
+            // focus dispatches NeedRepaint immediately rather than deferring
+            // by up to 1000/max_fps ms.
+            this.inner.borrow_mut().paint_throttled = false;
             this.inner
                 .borrow_mut()
                 .events
