@@ -21,6 +21,12 @@ pub struct ShaderUniform {
     // sampler2D atlas_linear_sampler;
 }
 
+pub struct CachedTextureBindGroups {
+    pub linear: wgpu::BindGroup,
+    pub nearest: wgpu::BindGroup,
+    pub atlas_ptr: *const dyn Texture2d,
+}
+
 pub struct WebGpuState {
     pub adapter_info: wgpu::AdapterInfo,
     pub downlevel_caps: wgpu::DownlevelCapabilities,
@@ -36,6 +42,7 @@ pub struct WebGpuState {
     pub texture_nearest_sampler: wgpu::Sampler,
     pub texture_linear_sampler: wgpu::Sampler,
     pub handle: RawHandlePair,
+    pub cached_texture_bind_groups: RefCell<Option<CachedTextureBindGroups>>,
 }
 
 pub struct RawHandlePair {
@@ -380,7 +387,7 @@ impl WebGpuState {
                 wgpu::CompositeAlphaMode::Auto
             },
             view_formats,
-            desired_maximum_frame_latency: 2,
+            desired_maximum_frame_latency: 1,
         };
         surface.configure(&device, &config);
 
@@ -521,6 +528,7 @@ impl WebGpuState {
             texture_bind_group_layout,
             texture_nearest_sampler,
             texture_linear_sampler,
+            cached_texture_bind_groups: RefCell::new(None),
         })
     }
 

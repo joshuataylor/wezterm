@@ -18,7 +18,7 @@ impl crate::TermWindow {
     }
 
     fn call_draw_webgpu(&mut self) -> anyhow::Result<()> {
-        use crate::termwindow::webgpu::WebGpuTexture;
+        use crate::termwindow::webgpu::{CachedTextureBindGroups, WebGpuTexture};
 
         let webgpu = self.webgpu.as_mut().unwrap();
         let render_state = self.render_state.as_ref().unwrap();
@@ -40,40 +40,60 @@ impl crate::TermWindow {
                 label: Some("Render Encoder"),
             });
         let tex = render_state.glyph_cache.borrow().atlas.texture();
-        let tex = tex.downcast_ref::<WebGpuTexture>().unwrap();
-        let texture_view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let tex_ptr = std::rc::Rc::as_ptr(&tex) as *const dyn window::bitmaps::Texture2d;
 
-        let texture_linear_bind_group =
-            webgpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                layout: &webgpu.texture_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&texture_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&webgpu.texture_linear_sampler),
-                    },
-                ],
-                label: Some("linear bind group"),
-            });
+        // Cache texture bind groups — only recreate when the atlas texture changes
+        {
+            let needs_rebuild = webgpu
+                .cached_texture_bind_groups
+                .borrow()
+                .as_ref()
+                .map_or(true, |cached| !std::ptr::eq(cached.atlas_ptr, tex_ptr));
 
-        let texture_nearest_bind_group =
-            webgpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                layout: &webgpu.texture_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&texture_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&webgpu.texture_nearest_sampler),
-                    },
-                ],
-                label: Some("nearest bind group"),
-            });
+            if needs_rebuild {
+                let tex = tex.downcast_ref::<WebGpuTexture>().unwrap();
+                let texture_view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+                let linear = webgpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    layout: &webgpu.texture_bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&texture_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(&webgpu.texture_linear_sampler),
+                        },
+                    ],
+                    label: Some("linear bind group"),
+                });
+
+                let nearest = webgpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    layout: &webgpu.texture_bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&texture_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(
+                                &webgpu.texture_nearest_sampler,
+                            ),
+                        },
+                    ],
+                    label: Some("nearest bind group"),
+                });
+
+                *webgpu.cached_texture_bind_groups.borrow_mut() = Some(CachedTextureBindGroups {
+                    linear,
+                    nearest,
+                    atlas_ptr: tex_ptr,
+                });
+            }
+        }
+        let cached_bg = webgpu.cached_texture_bind_groups.borrow();
 
         let mut cleared = false;
         let foreground_text_hsb = self.config.foreground_text_hsb;
@@ -94,12 +114,17 @@ impl crate::TermWindow {
         )
         .to_arrays_transposed();
 
+        let uniforms = webgpu.create_uniform(ShaderUniform {
+            foreground_text_hsb,
+            milliseconds,
+            projection,
+        });
+
         for layer in render_state.layers.borrow().iter() {
             for idx in 0..3 {
                 let vb = &layer.vb.borrow()[idx];
                 let (vertex_count, index_count) = vb.vertex_index_count();
                 let vertex_buffer;
-                let uniforms;
                 if vertex_count > 0 {
                     let mut vertices = vb.current_vb_mut();
                     let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -127,16 +152,11 @@ impl crate::TermWindow {
                     });
                     cleared = true;
 
-                    uniforms = webgpu.create_uniform(ShaderUniform {
-                        foreground_text_hsb,
-                        milliseconds,
-                        projection,
-                    });
-
                     render_pass.set_pipeline(&webgpu.render_pipeline);
                     render_pass.set_bind_group(0, &uniforms, &[]);
-                    render_pass.set_bind_group(1, &texture_linear_bind_group, &[]);
-                    render_pass.set_bind_group(2, &texture_nearest_bind_group, &[]);
+                    let bg = cached_bg.as_ref().unwrap();
+                    render_pass.set_bind_group(1, &bg.linear, &[]);
+                    render_pass.set_bind_group(2, &bg.nearest, &[]);
                     vertex_buffer = vertices.webgpu_mut().recreate();
                     vertex_buffer.unmap();
                     render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));

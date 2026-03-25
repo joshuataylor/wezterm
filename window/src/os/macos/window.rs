@@ -2260,7 +2260,7 @@ impl WindowView {
                 .borrow_mut()
                 .events
                 .dispatch(WindowEvent::FocusChanged(false));
-            this.update_application_presentation(true);
+            this.update_application_presentation(false);
         }
     }
 
