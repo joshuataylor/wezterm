@@ -544,6 +544,17 @@ impl FontConfigInner {
 
             std::thread::spawn(move || {
                 for info in rx {
+                    // On macOS this thread calls into Core Text, which returns
+                    // autoreleased objects. Without scoping each unit of work in
+                    // its own autorelease pool, those objects accumulate in the
+                    // thread's implicit top-level pool and are only drained when
+                    // the thread is destroyed. At process/window shutdown that
+                    // drain can touch already-freed CoreText/AppKit state and
+                    // crash in objc_release. Draining per message keeps the
+                    // top-level pool empty.
+                    #[cfg(target_os = "macos")]
+                    objc::rc::autoreleasepool(|| info.process());
+                    #[cfg(not(target_os = "macos"))]
                     info.process();
                 }
             });
