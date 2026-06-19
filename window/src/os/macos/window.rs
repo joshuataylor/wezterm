@@ -16,7 +16,8 @@ use crate::{
 use anyhow::{anyhow, bail, ensure};
 use async_trait::async_trait;
 use cocoa::appkit::{
-    self, CGFloat, NSApplication, NSApplicationActivateIgnoringOtherApps,
+    self, CGFloat, NSApp, NSApplication, NSApplicationActivateAllWindows,
+    NSApplicationActivateIgnoringOtherApps, NSApplicationActivationOptions,
     NSApplicationPresentationOptions, NSBackingStoreBuffered, NSEvent, NSEventModifierFlags,
     NSOpenGLContext, NSOpenGLPixelFormat, NSPasteboard, NSRunningApplication, NSScreen, NSView,
     NSViewHeightSizable, NSViewWidthSizable, NSWindow, NSWindowStyleMask,
@@ -1161,12 +1162,40 @@ impl WindowInner {
     }
 }
 
+/// Bring the wezterm application to the foreground and give its windows
+/// keyboard focus.
+///
+/// When wezterm is cold-started from the CLI, `wezterm start` execs
+/// `wezterm-gui` directly rather than going through LaunchServices, so macOS
+/// does not automatically promote us to the active application the way it does
+/// for a Finder/`open` launch. We therefore have to activate ourselves
+/// explicitly, otherwise the first window opens behind whatever app was
+/// previously frontmost (see issue #7326).
+///
+/// The modern `NSRunningApplication` activation path is *cooperative*: macOS
+/// will not let it steal focus from the terminal that is still frontmost, so
+/// on its own it frequently leaves our window behind that terminal. The
+/// deprecated `-[NSApplication activateIgnoringOtherApps:]` is the one call
+/// that, in practice on macOS 14/15/26, still forces us in front regardless of
+/// who is frontmost. We call both: the legacy one for the force, the modern
+/// one (with `NSApplicationActivateAllWindows`, the supported flag, ORed with
+/// the deprecated no-op for older releases) for correctness going forward.
+fn activate_native_app() {
+    unsafe {
+        let app = NSApp();
+        app.activateIgnoringOtherApps_(YES);
+
+        let current_app = NSRunningApplication::currentApplication(nil);
+        let options: NSApplicationActivationOptions = std::mem::transmute(
+            NSApplicationActivateAllWindows as u64 | NSApplicationActivateIgnoringOtherApps as u64,
+        );
+        current_app.activateWithOptions_(options);
+    }
+}
+
 impl WindowInner {
     fn show(&mut self) {
         unsafe {
-            let current_app = NSRunningApplication::currentApplication(nil);
-            current_app.activateWithOptions_(NSApplicationActivateIgnoringOtherApps);
-
             // Stupid hack: adjust the window style mask and set it back
             // to what it was.
             // Without this, the CAMetalLayer used by webgpu seems to get
@@ -1182,8 +1211,30 @@ impl WindowInner {
 
             self.update_titlebar_background();
 
-            self.window.makeKeyAndOrderFront_(nil)
+            // Order the window front and make it key *before* activating the
+            // app, so that the activation has a key window to bring forward.
+            self.window.makeKeyAndOrderFront_(nil);
+
+            activate_native_app();
         }
+
+        // On a cold start the app may not yet be fully attached to the window
+        // server when show() runs, so the synchronous activation above can be
+        // silently dropped, leaving the window unfocused and behind the
+        // terminal we were launched from. A single next-runloop-turn retry
+        // isn't enough: WindowServer often still doesn't have a realised window
+        // to promote. Re-attempt activation a handful of times over the first
+        // few hundred milliseconds, hopping back onto the main thread for each
+        // attempt (Cocoa activation must run there), to win that race.
+        std::thread::spawn(|| {
+            for delay_ms in [20u64, 60, 150, 300] {
+                std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+                promise::spawn::spawn_into_main_thread(async move {
+                    activate_native_app();
+                })
+                .detach();
+            }
+        });
     }
 
     fn close(&mut self) {
